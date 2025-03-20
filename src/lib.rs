@@ -1,3 +1,4 @@
+use wgpu::util::DeviceExt;
 use winit::{
     dpi::PhysicalPosition,
     event::*,
@@ -12,11 +13,16 @@ use wasm_bindgen::prelude::*;
 struct State<'a> {
     surface: wgpu::Surface<'a>,
     device: wgpu::Device,
-
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     window: &'a Window,
+    render_pipeline: wgpu::RenderPipeline,
+    // vertex_buffer: wgpu::Buffer,
+    use_position_color: bool,
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
+    current_clear_color: Option<wgpu::Color>,
 }
 
 impl<'a> State<'a> {
@@ -91,13 +97,100 @@ impl<'a> State<'a> {
 
         surface.configure(&device, &config);
 
+        let uniform_data = [0u32];
+
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Uniform Buffer"),
+            contents: bytemuck::cast_slice(&uniform_data),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let uniform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Uniform Buffer Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    count: None,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                }],
+            });
+
+        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Uniform Bind Group"),
+            layout: &uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+        });
+
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Render Pipeline Layout"),
+                bind_group_layouts: &[&uniform_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Render pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: 0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        });
+
         Self {
+            use_position_color: false,
+            current_clear_color: None,
             config,
             device,
             queue,
             size,
             surface,
             window,
+            render_pipeline,
+            uniform_bind_group,
+            uniform_buffer,
         }
     }
 
@@ -117,13 +210,41 @@ impl<'a> State<'a> {
     fn input(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let _ = self.render(Some(wgpu::Color {
+                self.current_clear_color = Some(wgpu::Color {
                     r: position.x / self.size.width as f64,
                     g: position.y / self.size.height as f64,
                     b: ((position.x / self.size.width as f64) + 0.1).clamp(0.0, 1.0),
                     a: 1.0,
-                }));
+                });
 
+                let _ = self.render();
+
+                true
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key:
+                            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Space),
+                        state: winit::event::ElementState::Released,
+                        ..
+                    },
+                ..
+            } => {
+                self.use_position_color = !self.use_position_color;
+
+                let uniform_data = if self.use_position_color {
+                    [1u32]
+                } else {
+                    [0u32]
+                };
+                self.queue.write_buffer(
+                    &self.uniform_buffer,
+                    0,
+                    bytemuck::cast_slice(&uniform_data),
+                );
+
+                let _ = self.render();
                 true
             }
             _ => false,
@@ -132,7 +253,7 @@ impl<'a> State<'a> {
 
     fn update(&mut self) {}
 
-    fn render(&mut self, color: Option<wgpu::Color>) -> Result<(), wgpu::SurfaceError> {
+    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
 
         let view = output
@@ -146,25 +267,34 @@ impl<'a> State<'a> {
             });
 
         {
-            let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(color.unwrap_or(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
-                            a: 1.0,
-                        })),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                color_attachments: &[
+                    // This is what @locatio(@) in the fragment shader targets
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(self.current_clear_color.unwrap_or(
+                                wgpu::Color {
+                                    r: 0.1,
+                                    g: 0.2,
+                                    b: 0.3,
+                                    a: 1.0,
+                                },
+                            )),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                ],
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
+
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            render_pass.draw(0..3, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -173,6 +303,28 @@ impl<'a> State<'a> {
         Ok(())
     }
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct Vertex {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+
+const VERTICES: &[Vertex] = &[
+    Vertex {
+        position: [0.0, 0.5, 0.0],
+        color: [1., 0., 0.],
+    },
+    Vertex {
+        color: [0.0, 1.0, 0.0],
+        position: [-0.5, 0.5, 0.0],
+    },
+    Vertex {
+        color: [0.0, 0.0, 1.0],
+        position: [0.5, 0.5, 0.0],
+    },
+];
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
 pub async fn run() {
@@ -245,7 +397,7 @@ pub async fn run() {
 
                         state.update();
 
-                        match state.render(None) {
+                        match state.render() {
                             Ok(_) => {}
 
                             // Reconfigue tho surface if its lost or outdated
