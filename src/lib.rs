@@ -145,17 +145,17 @@ impl<'a> State<'a> {
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(PENTAGON_VERTICES),
+            contents: bytemuck::cast_slice(OCTAGON_VERTICES),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(INDICES),
+            contents: bytemuck::cast_slice(OCTAGON_INDICES),
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let num_indices = INDICES.len() as u32;
+        let num_indices = OCTAGON_INDICES.len() as u32;
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render pipeline"),
@@ -407,6 +407,51 @@ const INDICES: &[u16] = &[
     0, 1, 4, //
     1, 2, 4, //
     2, 3, 4, //
+];
+
+// Pentagon Verticess
+const OCTAGON_VERTICES: &[Vertex] = &[
+    Vertex {
+        position: [-0.4, -0.2, 0.0],
+        color: [0.5, 0.0, 0.5],
+    }, // A
+    Vertex {
+        position: [0.4, -0.2, 0.0],
+        color: [0.5, 0.0, 0.5],
+    }, // B
+    Vertex {
+        position: [-0.4, 0.2, 0.0],
+        color: [0.5, 0.0, 0.5],
+    }, // C
+    Vertex {
+        position: [0.4, 0.2, 0.0],
+        color: [0.5, 0.0, 0.5],
+    }, // D
+    Vertex {
+        position: [-0.2, -0.4, 0.0],
+        color: [0.5, 0.0, 0.5],
+    }, // E
+    Vertex {
+        position: [-0.2, 0.4, 0.0],
+        color: [0.5, 0.0, 0.5],
+    }, // F
+    Vertex {
+        position: [0.2, -0.4, 0.0],
+        color: [0.5, 0.0, 0.5],
+    }, // G
+    Vertex {
+        position: [0.2, 0.4, 0.0],
+        color: [0.5, 0.0, 0.5],
+    }, // H
+];
+
+const OCTAGON_INDICES: &[u16] = &[
+    7, 5, 3, //
+    5, 2, 3, //
+    2, 0, 3, //
+    0, 4, 3, //
+    4, 6, 3, //
+    6, 1, 3, //
 ];
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
