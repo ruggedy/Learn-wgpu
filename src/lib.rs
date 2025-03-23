@@ -1,3 +1,5 @@
+mod texture;
+
 use wgpu::util::DeviceExt;
 use winit::{
     event::*,
@@ -25,6 +27,7 @@ struct State<'a> {
     current_clear_color: Option<wgpu::Color>,
     num_indices: u32,
     diffuse_bind_group: wgpu::BindGroup,
+    diffuse_texture: texture::Texture,
 }
 
 impl<'a> State<'a> {
@@ -99,104 +102,8 @@ impl<'a> State<'a> {
         surface.configure(&device, &config);
 
         let diffuse_bytes = include_bytes!("happy-tree.png");
-        let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
-        let diffuse_rgba = diffuse_image.to_rgba8();
-
-        use image::GenericImageView;
-
-        let dimensions = diffuse_image.dimensions();
-
-        let texture_size = wgpu::Extent3d {
-            width: dimensions.0,
-            height: dimensions.1,
-
-            // All textures are stored as 3D, we represent our 2B texture
-            // by setting depth to 1.
-            depth_or_array_layers: 1,
-        };
-
-        let diffuse_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("diffuse_texture"),
-            size: texture_size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-
-            // This is the same as with the SurfaceConfig. It
-            // specifies what the texture formats can be used to
-            // create TextureViews for this texture. The base
-            // texture format (Rgba8UnormSrgb in this case)  is
-            // always supported. Note that using a different
-            // texture format is not supproted on the WebGL2
-            // platform
-            view_formats: &[],
-        });
-
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &diffuse_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &diffuse_rgba,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * dimensions.0),
-                rows_per_image: Some(dimensions.1),
-            },
-            texture_size,
-        );
-
-        // The old way of writing texture to data was to copy the pixel data to a buffer and the copy it
-        // to the texture. Using write_texture( as shown above) is a bit more efficient as it uses one buffer less.
-        //
-        //
-        // let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        //     label: Some("Temp Buffer"),
-        //     contents: &diffuse_rgba,
-        //     usage: wgpu::BufferUsages::COPY_SRC,
-        // });
-
-        // let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-        //     label: Some("texture_buffer_copy_encoder"),
-        // });
-
-        // encoder.copy_buffer_to_texture(
-        //     wgpu::TexelCopyBufferInfo {
-        //         buffer: &buffer,
-        //         layout: wgpu::TexelCopyBufferLayout {
-        //             offset: 0,
-        //             bytes_per_row: Some(4 * dimensions.0),
-        //             rows_per_image: Some(dimensions.1),
-        //         },
-        //     },
-        //     wgpu::TexelCopyTextureInfo {
-        //         texture: &diffuse_texture,
-        //         mip_level: 0,
-        //         origin: wgpu::Origin3d::ZERO,
-        //         aspect: wgpu::TextureAspect::All,
-        //     },
-        //     texture_size,
-        // );
-        //
-        // queue.submit(std::iter::once(encoder.finish()));
-        //
-
-        let diffuse_texture_view =
-            diffuse_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let diffuse_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
+        let diffuse_texture =
+            texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "Happy Tree").unwrap();
 
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -227,11 +134,11 @@ impl<'a> State<'a> {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&diffuse_texture_view),
+                    resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&diffuse_sampler),
+                    resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
                 },
             ],
         });
@@ -352,6 +259,7 @@ impl<'a> State<'a> {
             uniform_buffer,
             diffuse_bind_group,
             num_indices,
+            diffuse_texture,
         }
     }
 
