@@ -1,3 +1,4 @@
+mod camera;
 mod texture;
 
 use wgpu::util::DeviceExt;
@@ -28,6 +29,11 @@ struct State<'a> {
     num_indices: u32,
     diffuse_bind_group: wgpu::BindGroup,
     diffuse_texture: texture::Texture,
+    camera: camera::Camera,
+    camera_uniform: camera::CameraUniform,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
+    camera_controller: camera::CameraController,
 }
 
 impl<'a> State<'a> {
@@ -143,6 +149,50 @@ impl<'a> State<'a> {
             ],
         });
 
+        let camera = camera::Camera::new(
+            (0.0, 0.1, 2.0).into(),
+            (0.0, 0.0, 0.0).into(),
+            cgmath::Vector3::unit_y(),
+            config.width as f32 / config.height as f32,
+            45.0,
+            0.1,
+            100.0,
+        );
+
+        let mut camera_uniform = camera::CameraUniform::new();
+        camera_uniform.update_view_proj(&camera);
+
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Buffer"),
+            contents: bytemuck::cast_slice(&[camera_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("camera_bind_group_layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    count: None,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                }],
+            });
+
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("camera_bind_group"),
+            layout: &camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+        });
+
+        let camera_controller = camera::CameraController::new(0.2);
         /// This part is used as the flag to toggle
         /// the switch from static color to
         /// something else
@@ -187,7 +237,11 @@ impl<'a> State<'a> {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&uniform_bind_group_layout, &texture_bind_group_layout],
+                bind_group_layouts: &[
+                    &uniform_bind_group_layout,
+                    &texture_bind_group_layout,
+                    &camera_bind_group_layout,
+                ],
                 push_constant_ranges: &[],
             });
 
@@ -260,6 +314,11 @@ impl<'a> State<'a> {
             diffuse_bind_group,
             num_indices,
             diffuse_texture,
+            camera,
+            camera_uniform,
+            camera_buffer,
+            camera_bind_group,
+            camera_controller,
         }
     }
 
@@ -286,8 +345,6 @@ impl<'a> State<'a> {
                     a: 1.0,
                 });
 
-                let _ = self.render();
-
                 true
             }
             WindowEvent::KeyboardInput {
@@ -313,14 +370,30 @@ impl<'a> State<'a> {
                     bytemuck::cast_slice(&uniform_data),
                 );
 
-                let _ = self.render();
                 true
             }
-            _ => false,
+            _ => self.camera_controller.process_events(event),
         }
     }
 
-    fn update(&mut self) {}
+    fn update(&mut self) {
+        // we could use a staging buffer for this
+        // find out more information about staging buffers
+        // and how they work.
+
+        self.camera_controller.update_camera(&mut self.camera);
+        self.camera_uniform.update_view_proj(&self.camera);
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera_uniform]),
+        );
+
+        println!(
+            "update was called, value of perspective projection {:?}",
+            self.camera_uniform.view_proj
+        );
+    }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
@@ -365,8 +438,10 @@ impl<'a> State<'a> {
 
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+
             render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             render_pass.set_bind_group(1, &self.diffuse_bind_group, &[]);
+            render_pass.set_bind_group(2, &self.camera_bind_group, &[]);
 
             render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
         }
@@ -378,6 +453,9 @@ impl<'a> State<'a> {
     }
 }
 
+// do some more looking into what this does under the hood
+// I understand it is to do with memory layout and basically
+// making the layout strategy C-like. understand the implemenentation
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
@@ -569,34 +647,35 @@ pub async fn run() {
                         // this tells winit that we want another frame after this one
                         state.window().request_redraw();
 
+                        // why is surface configured right here?
                         if surface_configured {
                             return;
-                        }
-
-                        state.update();
-
-                        match state.render() {
-                            Ok(_) => {}
-
-                            // Reconfigue tho surface if its lost or outdated
-                            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                                state.resize(state.size)
-                            }
-
-                            // The system is out of memory, we should quit
-                            Err(wgpu::SurfaceError::OutOfMemory | wgpu::SurfaceError::Other) => {
-                                log::error!("OutOfMemory");
-                                control_flow.exit();
-                            }
-
-                            // this happens when a frame takes too long
-                            Err(wgpu::SurfaceError::Timeout) => {
-                                log::warn!("Surface timeout")
-                            }
                         }
                     }
 
                     _ => {}
+                }
+            } else {
+                state.update();
+
+                match state.render() {
+                    Ok(_) => {}
+
+                    // Reconfigue tho surface if its lost or outdated
+                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                        state.resize(state.size)
+                    }
+
+                    // The system is out of memory, we should quit
+                    Err(wgpu::SurfaceError::OutOfMemory | wgpu::SurfaceError::Other) => {
+                        log::error!("OutOfMemory");
+                        control_flow.exit();
+                    }
+
+                    // this happens when a frame takes too long
+                    Err(wgpu::SurfaceError::Timeout) => {
+                        log::warn!("Surface timeout")
+                    }
                 }
             }
         }
