@@ -104,7 +104,6 @@ impl CameraController {
             } => {
                 let is_pressed = ElementState::is_pressed(*state);
 
-                println!(" is_pressed is {}", is_pressed);
                 match code {
                     winit::keyboard::KeyCode::KeyW | winit::keyboard::KeyCode::ArrowUp => {
                         self.is_forward_pressed = is_pressed;
